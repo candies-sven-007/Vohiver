@@ -108,8 +108,10 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 	}
 	id.USIMAID = aid
 	aidBytes, _ := hexAPDU(aid)
-	selectAID := append([]byte{0x00, 0xA4, 0x04, 0x00, byte(len(aidBytes))}, aidBytes...)
-	selectAID = append(selectAID, 0x00)
+	// v1.2 fix (2026-11-03 stick test): v1 selected ADF.USIM with P2=00
+	// + Le=00 and the eSTK card answered 0x6F00. MDD's proven path uses
+	// P2=04, case 3, no Le: 00A40404<len><aid>. Use MDD's exact form here.
+	selectAID := append([]byte{0x00, 0xA4, 0x04, 0x04, byte(len(aidBytes))}, aidBytes...)
 	if _, sw, err := tx(selectAID); err != nil || sw != 0x9000 {
 		return id, fmt.Errorf("SELECT ADF.USIM (%s): sw=0x%04X err=%v", aid, sw, err)
 	}
