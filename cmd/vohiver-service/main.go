@@ -31,6 +31,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/candies-sven-007/vohiver/internal/operator"
 	"github.com/candies-sven-007/vohiver/internal/pcsc"
 	"github.com/candies-sven-007/vohiver/internal/sim"
 )
@@ -196,9 +197,27 @@ func main() {
 			"is_euicc_proven": resp.IsEUICC, "isd_r_select_sw": resp.ISDRSW,
 		})
 	})
+	mux.HandleFunc("/api/operator", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := readOnce(*readerSub)
+		if !resp.OK {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": resp.Error})
+			return
+		}
+		cands, err := operator.Candidates(resp.MCC, resp.MNC2)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "mcc": resp.MCC, "mnc2_candidate": resp.MNC2,
+			"note": "MNC length is unknown; try candidates in order, do not guess",
+			"candidates": cands,
+		})
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintln(w, "vohiver-service v2: /health, /api/identity, /api/euicc")
+		fmt.Fprintln(w, "vohiver-service v2: /health, /api/identity, /api/euicc, /api/operator")
 		fmt.Fprintln(w, "VoWiFi IMS registration, calls and SMS are NOT in this version.")
 	})
 	addr := fmt.Sprintf(":%d", *port)
