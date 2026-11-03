@@ -1,0 +1,8 @@
+# Vohiver v1 example config — probe only, no VoWiFi service yet.
+# Copy to config.yaml and edit only the reader substring. Do NOT put a
+# real password, IMEI, ICCID or IMSI in this file.
+probe:
+  reader: "Alcor"   # reader name substring; empty = first reader
+  watch_seconds: 0  # >0 = poll ATR and re-read identity on card swap
+  # How to run on the stick (separate directory, see README):
+  #   LD_LIBRARY_PATH=/opt/mdd/current/lib ./vohiver-probe -reader Alcor
