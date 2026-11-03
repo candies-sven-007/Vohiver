@@ -65,10 +65,14 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 	var id sim.Identity
 	tx := func(apdu []byte) ([]byte, uint16, error) { return c.Transmit(apdu) }
 
-	if _, sw, err := tx(mustAPDU("00A40000023F00")); err != nil || sw != 0x9000 {
+	// v1.1 fix (2026-11-03 stick test): the v1 SELECT MF used P2=00, case 3,
+	// and the eSTK card answered 0x6B00 (wrong P1-P2). MDD's proven path on
+	// this stick uses P2=04 + Le=00 (case 4) for MF/EF selections, so use
+	// MDD's exact APDUs here: 00A40004023F0000, 00A40004022FE200, etc.
+	if _, sw, err := tx(mustAPDU("00A40004023F0000")); err != nil || sw != 0x9000 {
 		return id, fmt.Errorf("SELECT MF: sw=0x%04X err=%v", sw, err)
 	}
-	if _, sw, err := tx(mustAPDU("00A40004022FE20")); err != nil || sw != 0x9000 {
+	if _, sw, err := tx(mustAPDU("00A40004022FE200")); err != nil || sw != 0x9000 {
 		return id, fmt.Errorf("SELECT EF.ICCID: sw=0x%04X err=%v", sw, err)
 	}
 	raw, sw, err := tx(mustAPDU("00B000000A"))
@@ -82,7 +86,7 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 	id.ICCID = iccid
 
 	// EF.DIR scan for the USIM AID.
-	if _, sw, err := tx(mustAPDU("00A40004022F00")); err != nil || sw != 0x9000 {
+	if _, sw, err := tx(mustAPDU("00A40004022F0000")); err != nil || sw != 0x9000 {
 		// No EF.DIR: fall back to selecting ADF.USIM by the well-known
 		// prefix is not safe, so report ICCID-only identity.
 		return id, nil
@@ -109,7 +113,7 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 	if _, sw, err := tx(selectAID); err != nil || sw != 0x9000 {
 		return id, fmt.Errorf("SELECT ADF.USIM (%s): sw=0x%04X err=%v", aid, sw, err)
 	}
-	if _, sw, err := tx(mustAPDU("00A40004026F07")); err != nil || sw != 0x9000 {
+	if _, sw, err := tx(mustAPDU("00A40004026F0700")); err != nil || sw != 0x9000 {
 		return id, fmt.Errorf("SELECT EF.IMSI: sw=0x%04X err=%v", sw, err)
 	}
 	raw, sw, err = tx(mustAPDU("00B0000009"))
