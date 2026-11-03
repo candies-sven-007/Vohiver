@@ -32,7 +32,7 @@ branch slim-reader-vowifi, 2026-11-03):
     "settings": {"vnext": [{
       "address": "<node server, from your own library>",
       "port": "<node port>",
-      "users": [{"id": "<node uuid>", "flow": "xtls-rprx-vision"}]
+      "users": [{"id": "<node uuid>", "encryption": "none", "flow": "xtls-rprx-vision"}]
     }]},
     "streamSettings": {
       "network": "tcp", "security": "reality",
