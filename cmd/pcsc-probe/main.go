@@ -85,23 +85,30 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 	}
 	id.ICCID = iccid
 
-	// EF.DIR scan for the USIM AID.
-	if _, sw, err := tx(mustAPDU("00A40004022F0000")); err != nil || sw != 0x9000 {
-		// No EF.DIR: fall back to selecting ADF.USIM by the well-known
-		// prefix is not safe, so report ICCID-only identity.
+	// EF.DIR scan for the USIM AID, using MDD's exact method (v1.3 fix
+	// 2026-11-03): v1/v1.2 read records with Le=0xFF and relied on a
+	// 6Cxx correction, but a card that answers 6700 (wrong length)
+	// instead of 6Cxx then yields zero records and a silent
+	// ICCID-only identity, as seen on the U Mobile physical SIM.
+	// MDD takes the record length from the SELECT EF.DIR FCP
+	// (byte 7) and reads each record with exactly that Le.
+	fcp, sw, err := tx(mustAPDU("00A40004022F0000"))
+	if err != nil || sw != 0x9000 || len(fcp) < 8 {
+		// No usable EF.DIR: report ICCID-only identity, with the
+		// DIR status printed so the cause is not silent.
+		fmt.Printf("dir: select_sw=0x%04X fcp_len=%d (no usable EF.DIR, ICCID-only)\n", sw, len(fcp))
 		return id, nil
 	}
+	recordLen := fcp[7]
 	var records [][]byte
 	for rec := 1; rec <= 10; rec++ {
-		// READ RECORD, record length 0xFF is a probe; cards return the
-		// record with its own length in the FCP, so use a generous Le
-		// and let 6Cxx correction fix it.
-		data, sw, err := tx([]byte{0x00, 0xB2, byte(rec), 0x04, 0xFF})
+		data, sw, err := tx([]byte{0x00, 0xB2, byte(rec), 0x04, recordLen})
 		if err != nil || sw != 0x9000 || len(data) == 0 {
 			break
 		}
 		records = append(records, data)
 	}
+	fmt.Printf("dir: record_len=%d records_read=%d\n", recordLen, len(records))
 	aid, _ := sim.FindUSIMAID(records)
 	if aid == "" {
 		return id, nil
@@ -134,8 +141,9 @@ func readIdentity(c *pcsc.Client) (sim.Identity, error) {
 // (lpac) and does NOT download/enable/delete profiles. v2 owns LPA.
 func readEUICC(c *pcsc.Client) sim.Identity {
 	var id sim.Identity
-	// ISD-R AID (17 bytes): A0000005591010FFFFFFFF8900000100
-	_, sw, err := c.Transmit(mustAPDU("00A4040011A0000005591010FFFFFFFF890000010000"))
+	// ISD-R AID (16 bytes, v1.3 fix: v1 declared Lc=0x11/17 and the
+	// card answered 6700 wrong length): A0000005591010FFFFFFFF8900000100
+	_, sw, err := c.Transmit(mustAPDU("00A4040010A0000005591010FFFFFFFF890000010000"))
 	id.ISDRSW = sw
 	if err == nil && sw == 0x9000 {
 		id.IsEUICC = true
