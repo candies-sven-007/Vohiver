@@ -1,31 +1,20 @@
-name: build-arm64
-
-on:
-  push:
-    branches: ["v1/pcsc-probe", "main"]
-  pull_request:
-    branches: ["main"]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-      - name: Vet and build linux/arm64 probe
-        run: |
-          go mod tidy
-          go vet ./...
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o vohiver-probe ./cmd/pcsc-probe
-          ls -lh vohiver-probe
-          file vohiver-probe || true
-      - name: Upload ARM64 probe artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vohiver-probe-linux-arm64
-          path: vohiver-probe
-          if-no-files-found: error
+- name: Vet and build linux/arm64 probe and service
+  run: |
+    go mod tidy
+    go vet ./...
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o vohiver-probe ./cmd/pcsc-probe
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o vohiver-service ./cmd/vohiver-service
+    ls -lh vohiver-probe vohiver-service
+    file vohiver-probe vohiver-service || true
+- name: Upload ARM64 probe artifact
+  uses: actions/upload-artifact@v4
+  with:
+    name: vohiver-probe-linux-arm64
+    path: vohiver-probe
+    if-no-files-found: error
+- name: Upload ARM64 service artifact
+  uses: actions/upload-artifact@v4
+  with:
+    name: vohiver-service-linux-arm64
+    path: vohiver-service
+    if-no-files-found: error
