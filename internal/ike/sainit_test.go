@@ -17,8 +17,12 @@ func TestBuildSAInitStructure(t *testing.T) {
 	if binary.BigEndian.Uint32(pkt[24:28]) != uint32(len(pkt)) {
 		t.Fatalf("header length field wrong")
 	}
-	if pkt[16] != 33 || pkt[17] != 0x20 || pkt[18] != 34 {
-		t.Fatalf("header next/version/exchange = %d/%x/%d, want 33/20/34", pkt[16], pkt[17], pkt[18])
+	if pkt[16] != 33 || pkt[17] != 0x20 || pkt[18] != 34 || pkt[19] != 0x08 {
+		t.Fatalf("header next/version/exchange/flags = %d/%x/%d/%x, want 33/20/34/08 (initiator bit)", pkt[16], pkt[17], pkt[18], pkt[19])
+	}
+	// Proposal at 28+4=32: last, reserved, length, then number, protocol IKE=1, SPI size, transforms.
+	if pkt[36] != 1 || pkt[37] != 1 {
+		t.Fatalf("proposal number/protocol = %d/%d, want 1/1", pkt[36], pkt[37])
 	}
 	// SA payload at 28: next=KE(34), len=48.
 	if pkt[28] != 34 || binary.BigEndian.Uint16(pkt[30:32]) != 48 {

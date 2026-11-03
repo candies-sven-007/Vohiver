@@ -57,20 +57,135 @@ func MNCForms(mnc string) []string {
 // MNC candidate. It returns an error when MCC or MNC is empty, so
 // callers cannot silently build a target from a missing identity.
 func Candidates(mcc, mnc2 string) ([]Candidate, error) {
+	return CandidatesFor(mcc, mnc2)
+}
+
+// CandidatesFor is the generic entry point: Globe (51502) is
+// routed to its special case, every other PLMN uses the standard
+// MNC-forms order. No caller has to remember the Globe exception.
+func CandidatesFor(mcc, mnc2 string) ([]Candidate, error) {
 	mcc = strings.TrimSpace(mcc)
 	mnc2 = strings.TrimSpace(mnc2)
 	if mcc == "" || mnc2 == "" {
 		return nil, fmt.Errorf("operator: MCC or MNC candidate is empty (identity not ready)")
 	}
+	if IsGlobe(mcc, mnc2) {
+		return GlobeCandidates(), nil
+	}
 	var out []Candidate
 	for _, mnc := range MNCForms(mnc2) {
-		out = append(out, Candidate{
-			MCC:          mcc,
-			MNC:          mnc,
-			PLMN:         mcc + mnc,
-			EPDGHostname: fmt.Sprintf("epdg.epc.mnc%s.mcc%s.pub.3gppnetwork.org", mnc, mcc),
-			IMSDomain:    fmt.Sprintf("ims.mnc%s.mcc%s.3gppnetwork.org", mnc, mcc),
-		})
+		out = append(out, makeCandidate(mcc, mnc))
 	}
 	return out, nil
+}
+
+func makeCandidate(mcc, mnc string) Candidate {
+	return Candidate{
+		MCC:          mcc,
+		MNC:          mnc,
+		PLMN:         mcc + mnc,
+		EPDGHostname: fmt.Sprintf("epdg.epc.mnc%s.mcc%s.pub.3gppnetwork.org", mnc, mcc),
+		IMSDomain:    fmt.Sprintf("ims.mnc%s.mcc%s.3gppnetwork.org", mnc, mcc),
+	}
+}
+
+// IsGlobe reports whether MCC/MNC (2-digit candidate, or a 3-digit
+// form) is Philippines Globe, PLMN 51502 / 515002.
+func IsGlobe(mcc, mnc string) bool {
+	mcc = strings.TrimSpace(mcc)
+	mnc = strings.TrimSpace(mnc)
+	return mcc == "515" && (mnc == "02" || mnc == "002")
+}
+
+// GlobeCandidates returns Globe's ePDG/IMS candidates in the order
+// to try them: the 3-digit MNC form first, then the 2-digit form.
+//
+// Why this order, and why it is not taken from VoCat's profile:
+// VoCat's carrier_profiles.json entry ipcc-globe-51502 (home PLMN
+// 51502, ICCID prefix 896342) has an IKE proposal ("modern") and an
+// IMS encryption setting, but NO ePDG hostname field at all —
+// unlike Smart 51503 (epdg.epc.mnc003.mcc515...) and DITO 51566
+// (epdg.epc.mnc066.mcc515...), which both name their ePDG. Any code
+// that reads Globe's ePDG from that profile gets an empty string
+// and either dials nothing or dials a wrong default. So Globe must
+// be derived from the standard 3GPP hostname rule, never from that
+// profile field, and both MNC forms must be tried, 3-digit first
+// (the canonical form MDD's vowifi_support.py uses).
+func GlobeCandidates() []Candidate {
+	return []Candidate{
+		makeCandidate("515", "002"),
+		makeCandidate("515", "02"),
+	}
+}
+
+// IKEProposal is one IKE SA attempt, in VoCat's sense: "modern"
+// and "legacy-sha1-modp1024" are not different DH groups, they are
+// the same single proposal with the PRF/INTEG ordering flipped
+// (VoCat internal/vowifi/ike/provider.go ikeOffer: legacyFirst
+// puts SHA1 first, otherwise SHA256 first, same DH group).
+// Globe is therefore tried legacy-first, then modern, keeping
+// MODP1024 in both attempts; only the PRF/INTEG order changes.
+type IKEProposal struct {
+	Name       string `json:"name"`
+	FirstPRF   int    `json:"first_prf"`
+	FirstInteg int    `json:"first_integ"`
+	DHGroup    int    `json:"dh_group"`
+	EncrKeyLen int    `json:"encr_key_len"`
+}
+
+// LegacyProposal is the proven single proposal: ENCR AES_CBC
+// id 12 key length 128, PRF HMAC_SHA1 id 2 first, INTEG
+// HMAC_SHA1_96 id 2 first, DH MODP1024 id 2.
+func LegacyProposal() IKEProposal {
+	return IKEProposal{Name: "legacy-sha1-modp1024", FirstPRF: 2, FirstInteg: 2, DHGroup: 2, EncrKeyLen: 128}
+}
+
+// ModernProposal is VoCat's "modern" ordering: PRF HMAC_SHA256
+// id 5 first, INTEG HMAC_SHA256_128 id 12 first, same MODP1024
+// group. It is a second attempt, never the only attempt for Globe.
+func ModernProposal() IKEProposal {
+	return IKEProposal{Name: "modern", FirstPRF: 5, FirstInteg: 12, DHGroup: 2, EncrKeyLen: 128}
+}
+
+// GlobeIKEProposals returns Globe's IKE attempts in order:
+// legacy first, then modern.
+func GlobeIKEProposals() []IKEProposal {
+	return []IKEProposal{LegacyProposal(), ModernProposal()}
+}
+
+// Country is one supported country exit, keyed by MCC. The exit
+// is a label for the per-country proxy exit (MDD's egress model),
+// not a hardcoded node: the caller resolves the actual node for
+// that country from its own proxy library.
+type Country struct {
+	MCC       string `json:"mcc"`
+	Name      string `json:"name"`
+	ExitLabel string `json:"exit_label"`
+}
+
+// Countries is the generic multi-country list. It is keyed by MCC,
+// never by a single country, and UK is just one entry in it.
+var Countries = []Country{
+	{MCC: "525", Name: "Singapore", ExitLabel: "SG"},
+	{MCC: "502", Name: "Malaysia", ExitLabel: "MY"},
+	{MCC: "515", Name: "Philippines", ExitLabel: "PH"},
+	{MCC: "452", Name: "Vietnam", ExitLabel: "VN"},
+	{MCC: "310", Name: "United States", ExitLabel: "US"},
+	{MCC: "311", Name: "United States", ExitLabel: "US"},
+	{MCC: "234", Name: "United Kingdom", ExitLabel: "GB"},
+	{MCC: "262", Name: "Germany", ExitLabel: "DE"},
+	{MCC: "454", Name: "Hong Kong", ExitLabel: "HK"},
+}
+
+// ExitForMCC returns the per-country exit for an MCC, or false
+// when the MCC has no entry. Callers must not fall back to a UK
+// exit on false; an unknown MCC is an error, not a UK default.
+func ExitForMCC(mcc string) (Country, bool) {
+	mcc = strings.TrimSpace(mcc)
+	for _, c := range Countries {
+		if c.MCC == mcc {
+			return c, true
+		}
+	}
+	return Country{}, false
 }

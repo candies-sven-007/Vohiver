@@ -43,10 +43,28 @@ func transform(last byte, typ, id uint16, attr []byte) []byte {
 	return b
 }
 
-// BuildSAInit returns one IKEv2 IKE_SA_INIT packet. SA encoding
-// follows MDD's swu_ike.py: ENCR AES_CBC id 12 key length 128,
-// PRF HMAC_SHA1 id 2, INTEG HMAC_SHA1_96 id 2, DH MODP1024 id 2.
+// PinnedSA is the single proven SA proposal. It must never grow
+// into a multi-proposal packet: the gsm-sip-bridge research notes
+// record an 852-byte default proposal set that an ePDG answered
+// with a bare INVALID_SYNTAX on every attempt. This proposal is
+// 48 bytes in the SA payload, and the whole SA_INIT is 248 bytes
+// without a cookie.
+func PinnedSA() (encrID, prfID, integID, dhID int, keyLen int) {
+	return 12, 2, 2, 2, 128
+}
+
+// BuildSAInit returns one IKEv2 IKE_SA_INIT packet without a cookie.
 func BuildSAInit() []byte {
+	return BuildSAInitWithCookie(nil, nil)
+}
+
+// BuildSAInitWithCookie returns one IKE_SA_INIT packet. When cookie
+// is non-empty, the COOKIE Notify (type 16390, VoCat's notifyCookie)
+// is the FIRST payload, exactly as VoCat's provider does, and the
+// SA payload follows it. When spi is non-nil it is reused (cookie
+// retries must keep the same initiator SPI); otherwise a fresh
+// random SPI is generated.
+func BuildSAInitWithCookie(cookie, spi []byte) []byte {
 	encrAttr := []byte{0x80, 0x0e, 0x00, 0x80}
 	transforms := [][]byte{
 		transform(3, 1, 12, encrAttr),
@@ -54,7 +72,7 @@ func BuildSAInit() []byte {
 		transform(3, 3, 2, nil),
 		transform(0, 4, 2, nil),
 	}
-	propBody := []byte{1, 0, 0, 4}
+	propBody := []byte{1, 1, 0, 4}
 	for _, t := range transforms {
 		propBody = append(propBody, t...)
 	}
@@ -73,19 +91,36 @@ func BuildSAInit() []byte {
 	ni := []byte{0, 0, 0, 0}
 	ni = append(ni, nonce...)
 	binary.BigEndian.PutUint16(ni[2:4], uint16(len(ni)))
-	spi := make([]byte, 8)
-	rand.Read(spi)
+	if spi == nil {
+		spi = make([]byte, 8)
+		rand.Read(spi)
+	}
 	hdr := make([]byte, 28)
 	copy(hdr[0:8], spi)
-	hdr[16] = 33
 	hdr[17] = 0x20
 	hdr[18] = 34
-	hdr[19] = 0
-	total := 28 + len(sa) + len(ke) + len(ni)
+	hdr[19] = 0x08
+	var payloads []byte
+	if len(cookie) > 0 {
+		// Notify payload: generic header (next=SA) + body
+		// (protocol 0, SPI size 0, type 16390, cookie data).
+		notifyBody := []byte{0, 0, 0, 0}
+		binary.BigEndian.PutUint16(notifyBody[2:4], NotifyCookie)
+		notifyBody = append(notifyBody, cookie...)
+		notify := []byte{33, 0, 0, 0}
+		notify = append(notify, notifyBody...)
+		binary.BigEndian.PutUint16(notify[2:4], uint16(len(notify)))
+		payloads = append(payloads, notify...)
+		hdr[16] = PayloadNotify
+	} else {
+		hdr[16] = 33
+	}
+	payloads = append(payloads, sa...)
+	payloads = append(payloads, ke...)
+	payloads = append(payloads, ni...)
+	total := 28 + len(payloads)
 	binary.BigEndian.PutUint32(hdr[24:28], uint32(total))
-	pkt := append(hdr, sa...)
-	pkt = append(pkt, ke...)
-	pkt = append(pkt, ni...)
+	pkt := append(hdr, payloads...)
 	return pkt
 }
 
@@ -97,43 +132,85 @@ type ProbeResult struct {
 	Exchange     int    `json:"exchange"`
 	ResponderSPI string `json:"responder_spi,omitempty"`
 	Attempts     int    `json:"attempts"`
+	CookieRounds int    `json:"cookie_rounds"`
+	CookieSeen   bool   `json:"cookie_seen"`
 }
 
+// MaxCookieRounds bounds COOKIE challenges, matching VoCat's
+// maxIKEInitCookieChallenges = 4. A fifth cookie is an error, not
+// another retry: the ePDG is not going to accept the SA.
+const MaxCookieRounds = 4
+
 // ProbeSAInit sends SA_INIT via proxy (or directly when proxy is
-// empty), retrying up to 3 times with a fresh packet each time, and
-// returns the response summary. A single timeout is not proof the
-// ePDG is dead: a responder may drop one SA_INIT, so retries are
-// part of the probe, not a new test.
+// empty) and returns the response summary. It handles COOKIE
+// challenges: if a response carries exactly one COOKIE notify and
+// no SA, it resends the same initiator SPI with that cookie as
+// the first payload, up to MaxCookieRounds rounds. Each round
+// retries a timeout up to 3 times with a fresh DH/nonce but the
+// same SPI and cookie. A single timeout is not proof the ePDG is
+// dead, and a cookie is not a failure: it is the ePDG's
+// anti-flood check (Cisco ePDG docs: at most 8 IKE_INITs per
+// source IP/port before cookie/rate-limit behaviour).
 func ProbeSAInit(proxyURL, targetIP string, targetPort int) ProbeResult {
-	var lastErr string
-	for attempt := 1; attempt <= 3; attempt++ {
-		var conn net.Conn
-		var err error
-		if proxyURL != "" {
-			conn, err = egress.Dial(proxyURL, targetIP, targetPort, 5*time.Second)
-		} else {
-			conn, err = net.DialTimeout("udp", net.JoinHostPort(targetIP, fmt.Sprint(targetPort)), 5*time.Second)
-		}
-		if err != nil {
-			return ProbeResult{OK: false, Error: "dial: " + err.Error(), Attempts: attempt}
-		}
-		conn.SetDeadline(time.Now().Add(5 * time.Second))
-		if _, err := conn.Write(BuildSAInit()); err != nil {
+	spi := make([]byte, 8)
+	rand.Read(spi)
+	var cookie []byte
+	attempts := 0
+	for round := 0; round < MaxCookieRounds; round++ {
+		var lastErr string
+		var resp []byte
+		gotResp := false
+		for try := 0; try < 3; try++ {
+			attempts++
+			var conn net.Conn
+			var err error
+			if proxyURL != "" {
+				conn, err = egress.Dial(proxyURL, targetIP, targetPort, 5*time.Second)
+			} else {
+				conn, err = net.DialTimeout("udp", net.JoinHostPort(targetIP, fmt.Sprint(targetPort)), 5*time.Second)
+			}
+			if err != nil {
+				return ProbeResult{OK: false, Error: "dial: " + err.Error(), Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
+			}
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Write(BuildSAInitWithCookie(cookie, spi)); err != nil {
+				conn.Close()
+				lastErr = "write: " + err.Error()
+				continue
+			}
+			buf := make([]byte, 4096)
+			n, err := conn.Read(buf)
 			conn.Close()
-			lastErr = "write: " + err.Error()
-			continue
+			if err != nil {
+				lastErr = "no response: " + err.Error()
+				continue
+			}
+			resp = append([]byte(nil), buf[:n]...)
+			gotResp = true
+			break
 		}
-		buf := make([]byte, 4096)
-		n, err := conn.Read(buf)
-		conn.Close()
+		if !gotResp {
+			return ProbeResult{OK: false, Error: lastErr, Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
+		}
+		if len(resp) < 28 {
+			return ProbeResult{OK: false, Error: fmt.Sprintf("short response: %d bytes", len(resp)), Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
+		}
+		dec, err := Decode(resp)
 		if err != nil {
-			lastErr = "no response: " + err.Error()
+			return ProbeResult{OK: false, Error: "decode: " + err.Error(), Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
+		}
+		newCookie, hasCookie, err := ExtractCookie(dec)
+		if err != nil {
+			return ProbeResult{OK: false, Error: err.Error(), Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
+		}
+		if hasCookie && !dec.HasSA() {
+			cookie = newCookie
 			continue
 		}
-		if n < 28 {
-			return ProbeResult{OK: false, Error: fmt.Sprintf("short response: %d bytes", n), Attempts: attempt}
+		if dec.HasSA() {
+			return ProbeResult{OK: true, ResponseLen: len(resp), Exchange: dec.Header.Exchange, ResponderSPI: dec.Header.ResponderSPI, Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
 		}
-		return ProbeResult{OK: true, ResponseLen: n, Exchange: int(buf[18]), ResponderSPI: fmt.Sprintf("%x", buf[8:16]), Attempts: attempt}
+		return ProbeResult{OK: false, Error: "response has neither SA nor COOKIE", Attempts: attempts, CookieRounds: round, CookieSeen: len(cookie) > 0}
 	}
-	return ProbeResult{OK: false, Error: lastErr, Attempts: 3}
+	return ProbeResult{OK: false, Error: "too many COOKIE challenges", Attempts: attempts, CookieRounds: MaxCookieRounds, CookieSeen: true}
 }
