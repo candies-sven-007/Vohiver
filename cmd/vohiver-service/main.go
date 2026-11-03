@@ -31,6 +31,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/candies-sven-007/vohiver/internal/ike"
 	"github.com/candies-sven-007/vohiver/internal/operator"
 	"github.com/candies-sven-007/vohiver/internal/pcsc"
 	"github.com/candies-sven-007/vohiver/internal/sim"
@@ -196,6 +197,16 @@ func main() {
 			"ok": resp.OK, "error": resp.Error, "reader": resp.Reader,
 			"is_euicc_proven": resp.IsEUICC, "isd_r_select_sw": resp.ISDRSW,
 		})
+	})
+	mux.HandleFunc("/api/ike-probe", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		target := r.URL.Query().Get("target")
+		proxy := r.URL.Query().Get("proxy")
+		if target == "" {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "target is required"})
+			return
+		}
+		json.NewEncoder(w).Encode(ike.ProbeSAInit(proxy, target, 500))
 	})
 	mux.HandleFunc("/api/operator", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
