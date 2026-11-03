@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/candies-sven-007/vohiver/internal/ike"
@@ -202,11 +203,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		target := r.URL.Query().Get("target")
 		proxy := r.URL.Query().Get("proxy")
+		port := 500
+		if ps := r.URL.Query().Get("port"); ps != "" {
+			if p, err := strconv.Atoi(ps); err == nil && p > 0 && p <= 65535 {
+				port = p
+			}
+		}
 		if target == "" {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "target is required"})
 			return
 		}
-		json.NewEncoder(w).Encode(ike.ProbeSAInit(proxy, target, 500))
+		json.NewEncoder(w).Encode(ike.ProbeSAInit(proxy, target, port))
 	})
 	mux.HandleFunc("/api/operator", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
