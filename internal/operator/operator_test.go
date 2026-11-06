@@ -10,16 +10,16 @@ func TestGlobeCandidatesThreeDigitFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 2 {
-		t.Fatalf("Globe candidates = %d, want 2", len(cands))
+	if len(cands) != 3 {
+		t.Fatalf("Globe candidates = %d, want 3", len(cands))
 	}
 	if cands[0].MNC != "002" || cands[0].PLMN != "515002" ||
-		cands[0].EPDGHostname != "epdg.epc.mnc002.mcc515.pub.3gppnetwork.org" {
+		cands[0].EPDGHostname != "weconnect.globe.com.ph" {
 		t.Fatalf("first Globe candidate wrong: %+v", cands[0])
 	}
-	if cands[1].MNC != "02" || cands[1].PLMN != "51502" ||
-		cands[1].EPDGHostname != "epdg.epc.mnc02.mcc515.pub.3gppnetwork.org" {
-		t.Fatalf("second Globe candidate wrong: %+v", cands[1])
+	if cands[1].EPDGHostname != "epdg.epc.mnc002.mcc515.pub.3gppnetwork.org" ||
+		cands[2].EPDGHostname != "epdg.epc.mnc02.mcc515.pub.3gppnetwork.org" {
+		t.Fatalf("standard Globe fallbacks wrong: %+v", cands)
 	}
 	for _, c := range cands {
 		if c.EPDGHostname == "" {
@@ -29,19 +29,16 @@ func TestGlobeCandidatesThreeDigitFirst(t *testing.T) {
 }
 
 func TestGlobeDoesNotRelyOnVoCatEmptyEPDGField(t *testing.T) {
-	// VoCat carrier_profiles.json entry ipcc-globe-51502 has an IKE
-	// proposal and an IMS setting but NO ePDG hostname. This test
-	// encodes the contract that must hold regardless of that file:
-	// Globe candidates are derived from the 3GPP hostname rule,
-	// never read from a profile field that is empty for Globe.
-	// The proof is in the function itself: GlobeCandidates builds
-	// both hostnames from the rule, and this test fails if either
-	// hostname is empty or does not match the rule.
-	for _, c := range GlobeCandidates() {
-		want := "epdg.epc.mnc" + c.MNC + ".mcc515.pub.3gppnetwork.org"
-		if c.EPDGHostname != want {
-			t.Fatalf("Globe ePDG %q != rule-derived %q", c.EPDGHostname, want)
-		}
+	// VoCat carrier_profiles.json entry ipcc-globe-51502 has no
+	// ePDG hostname, and live DNS (2026-11-06) shows the standard
+	// forms do not work for Globe (mnc002 NXDOMAIN, mnc02 only
+	// 127.0.0.1), while weconnect.globe.com.ph resolves to a real
+	// Globe IP. So the first candidate must be the custom ePDG.
+	cands := GlobeCandidates()
+	if cands[0].EPDGHostname != "weconnect.globe.com.ph" {
+		t.Fatalf("Globe first ePDG = %q, want weconnect.globe.com.ph", cands[0].EPDGHostname)
+	}
+	for _, c := range cands {
 		if strings.Contains(c.EPDGHostname, "mnc.mcc") {
 			t.Fatalf("Globe ePDG has an empty MNC slot: %q", c.EPDGHostname)
 		}

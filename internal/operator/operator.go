@@ -98,21 +98,22 @@ func IsGlobe(mcc, mnc string) bool {
 }
 
 // GlobeCandidates returns Globe's ePDG/IMS candidates in the order
-// to try them: the 3-digit MNC form first, then the 2-digit form.
+// to try them: Globe's custom ePDG first, then the standard forms.
 //
-// Why this order, and why it is not taken from VoCat's profile:
-// VoCat's carrier_profiles.json entry ipcc-globe-51502 (home PLMN
-// 51502, ICCID prefix 896342) has an IKE proposal ("modern") and an
-// IMS encryption setting, but NO ePDG hostname field at all —
-// unlike Smart 51503 (epdg.epc.mnc003.mcc515...) and DITO 51566
-// (epdg.epc.mnc066.mcc515...), which both name their ePDG. Any code
-// that reads Globe's ePDG from that profile gets an empty string
-// and either dials nothing or dials a wrong default. So Globe must
-// be derived from the standard 3GPP hostname rule, never from that
-// profile field, and both MNC forms must be tried, 3-digit first
-// (the canonical form MDD's vowifi_support.py uses).
+// Globe does NOT use the standard 3GPP ePDG hostname: its real
+// ePDG is weconnect.globe.com.ph (Pixel IMS / PH WiFi-Calling
+// lists, checked 2026-11-06; VoCat's ipcc-globe-51502 profile also
+// has no ePDG field at all). Live DoH on 2026-11-06:
+// weconnect.globe.com.ph -> 124.6.181.102, while
+// epdg.epc.mnc002.mcc515.pub.3gppnetwork.org is NXDOMAIN and
+// epdg.epc.mnc02.mcc515.pub.3gppnetwork.org returns only 127.0.0.1.
+// The custom candidate keeps the standard IMS domain; the two
+// standard candidates remain as fallbacks only.
 func GlobeCandidates() []Candidate {
+	custom := makeCandidate("515", "002")
+	custom.EPDGHostname = "weconnect.globe.com.ph"
 	return []Candidate{
+		custom,
 		makeCandidate("515", "002"),
 		makeCandidate("515", "02"),
 	}
